@@ -1,48 +1,108 @@
 """
-Database Schemas
+Database Schemas for PlayerStock MVP
 
-Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
-
-Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Each Pydantic model maps to a MongoDB collection. Collection name is the lowercase of the class name.
 """
+from pydantic import BaseModel, Field, EmailStr
+from typing import Optional, List, Literal
+from datetime import datetime
 
-from pydantic import BaseModel, Field
-from typing import Optional
-
-# Example schemas (replace with your own):
-
+# Authentication & Users
 class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
     name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+    email: EmailStr = Field(..., description="Unique email address")
+    password_hash: str = Field(..., description="BCrypt password hash")
+    avatar_url: Optional[str] = Field(None, description="Profile avatar URL")
+    bio: Optional[str] = Field(None, description="Short bio")
+    is_active: bool = Field(True)
+    is_admin: bool = Field(False)
 
-class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
+# Wallet & Transactions
+class WalletTransaction(BaseModel):
+    user_id: str = Field(..., description="User ObjectId as string")
+    type: Literal["deposit", "withdrawal"]
+    amount: float = Field(..., gt=0)
+    currency: str = Field("USD")
+    status: Literal["pending", "completed", "failed", "cancelled"] = "pending"
+    provider: Optional[Literal["stripe", "paystack", "flutterwave", "manual"]] = None
+    reference: Optional[str] = None
+    meta: Optional[dict] = None
 
-# Add your own schemas here:
-# --------------------------------------------------
+# Players & Pricing
+class Player(BaseModel):
+    name: str
+    team: str
+    nationality: Optional[str] = None
+    position: Optional[str] = None
+    league: Optional[str] = None
+    cwc_status: Optional[Literal["current", "upcoming", "eliminated", "qualifying"]] = None
+    image_url: Optional[str] = None
+    is_active: bool = True
+    momentum_score: float = 0.0
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class PriceTick(BaseModel):
+    player_id: str
+    price: float = Field(..., gt=0)
+    source: Literal["engine", "manual", "import"] = "engine"
+    event: Optional[str] = None  # e.g., goal, assist, save, card
+    ts: Optional[datetime] = None
+
+# Trading & Portfolio
+class Trade(BaseModel):
+    user_id: str
+    player_id: str
+    side: Literal["buy", "sell"]
+    quantity: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    total: float = Field(..., gt=0)
+
+class Position(BaseModel):
+    user_id: str
+    player_id: str
+    quantity: float
+    avg_price: float
+
+# Community
+class Comment(BaseModel):
+    user_id: str
+    player_id: str
+    text: str
+    reactions: Optional[List[Literal["like", "hot"]]] = []
+
+class ChatMessage(BaseModel):
+    user_id: str
+    message: str
+
+# Contests
+class Contest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    start_at: datetime
+    end_at: datetime
+    pick_count: int = 5
+    is_active: bool = True
+
+class ContestEntry(BaseModel):
+    contest_id: str
+    user_id: str
+    player_ids: List[str]
+    score: float = 0.0
+
+# Badges
+class Badge(BaseModel):
+    code: str
+    label: str
+    description: Optional[str] = None
+
+class UserBadge(BaseModel):
+    user_id: str
+    badge_code: str
+    awarded_at: Optional[datetime] = None
+
+# Alerts
+class Alert(BaseModel):
+    user_id: str
+    player_id: str
+    direction: Literal["up", "down"]
+    threshold: float
+    active: bool = True
