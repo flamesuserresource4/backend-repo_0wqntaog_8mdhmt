@@ -1,8 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from jose import JWTError, jwt
@@ -104,6 +104,47 @@ def get_current_user(authorization: str = Header(None)) -> AuthedUser:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+# Simple WebSocket manager for real-time broadcasts
+class ConnectionManager:
+    def __init__(self):
+        self.ticks: Set[WebSocket] = set()
+        self.chat: Set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket, channel: str):
+        await ws.accept()
+        if channel == "ticks":
+            self.ticks.add(ws)
+        elif channel == "chat":
+            self.chat.add(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.ticks.discard(ws)
+        self.chat.discard(ws)
+
+    async def broadcast_ticks(self, data: dict):
+        dead = []
+        for ws in list(self.ticks):
+            try:
+                await ws.send_json({"type": "tick", **data})
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+    async def broadcast_chat(self, data: dict):
+        dead = []
+        for ws in list(self.chat):
+            try:
+                await ws.send_json({"type": "chat", **data})
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+
 # Routes
 @app.get("/")
 def read_root():
@@ -199,7 +240,7 @@ def list_players(status: Optional[str] = None, q: Optional[str] = None):
 
 
 @app.post("/players")
-def create_player(body: UpsertPlayerBody, user: AuthedUser = Depends(get_current_user)):
+async def create_player(body: UpsertPlayerBody, user: AuthedUser = Depends(get_current_user)):
     # Any authenticated user can create for now
     p = Player(
         name=body.name, team=body.team, nationality=body.nationality,
@@ -210,6 +251,8 @@ def create_player(body: UpsertPlayerBody, user: AuthedUser = Depends(get_current
     # Seed an initial price if none
     if db["pricetick"].count_documents({"player_id": pid}) == 0:
         create_document("pricetick", PriceTick(player_id=pid, price=10.0))
+        # Broadcast a synthetic initial tick
+        await manager.broadcast_ticks({"player_id": pid, "price": 10.0, "event": "seed"})
     return {"id": pid}
 
 
@@ -233,10 +276,12 @@ class TickBody(BaseModel):
 
 
 @app.post("/players/{player_id}/tick")
-def add_tick(player_id: str, body: TickBody, user: AuthedUser = Depends(get_current_user)):
+async def add_tick(player_id: str, body: TickBody, user: AuthedUser = Depends(get_current_user)):
     if db["player"].count_documents({"_id": ObjectId(player_id)}) == 0:
         raise HTTPException(status_code=404, detail="Player not found")
     tid = create_document("pricetick", PriceTick(player_id=player_id, price=body.price, event=body.event))
+    # Broadcast to live subscribers
+    await manager.broadcast_ticks({"player_id": player_id, "price": body.price, "event": body.event})
     return {"id": tid}
 
 
@@ -399,8 +444,8 @@ def get_wallet_balance(user_id: str) -> float:
         {"$match": {"user_id": user_id, "status": "completed"}},
         {"$group": {
             "_id": None,
-            "deposits": {"$sum": {"$cond": [{"$eq": ["$type", "deposit"]}, "$amount", 0]}},
-            "withdrawals": {"$sum": {"$cond": [{"$eq": ["$type", "withdrawal"]}, "$amount", 0]}},
+            "deposits": {"$sum": {"$cond": [[{"$eq": ["$type", "deposit"]}, "$amount", 0]]}},
+            "withdrawals": {"$sum": {"$cond": [[{"$eq": ["$type", "withdrawal"]}, "$amount", 0]]}},
         }},
     ])
     total_deposits = 0.0
@@ -435,8 +480,10 @@ class ChatBody(BaseModel):
 
 
 @app.post("/chat")
-def post_chat(body: ChatBody, user: AuthedUser = Depends(get_current_user)):
+async def post_chat(body: ChatBody, user: AuthedUser = Depends(get_current_user)):
     mid = create_document("chatmessage", ChatMessage(user_id=user.id, message=body.message))
+    # Broadcast new chat message
+    await manager.broadcast_chat({"id": mid, "message": body.message})
     return {"id": mid}
 
 
@@ -478,6 +525,35 @@ def leaderboard():
         leaders.append({"user_id": uid, "net_worth": round(equity + cash, 2)})
     leaders.sort(key=lambda x: x["net_worth"], reverse=True)
     return leaders[:50]
+
+
+# WebSocket endpoints
+@app.websocket("/ws/ticks")
+async def ws_ticks(ws: WebSocket):
+    await manager.connect(ws, "ticks")
+    try:
+        while True:
+            # Keep the connection alive; we don't expect messages from client for now
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+    except Exception:
+        manager.disconnect(ws)
+
+
+@app.websocket("/ws/chat")
+async def ws_chat(ws: WebSocket):
+    await manager.connect(ws, "chat")
+    try:
+        while True:
+            # If client sends a message directly on WS, echo to broadcast as chat
+            data = await ws.receive_text()
+            mid = create_document("chatmessage", ChatMessage(user_id="anon", message=data))
+            await manager.broadcast_chat({"id": mid, "message": data})
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+    except Exception:
+        manager.disconnect(ws)
 
 
 if __name__ == "__main__":
