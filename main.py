@@ -22,12 +22,27 @@ from schemas import (
 # App setup
 app = FastAPI(title="PlayerStock API")
 
+# Explicitly set allowed origins to the deployed frontend and localhost for safety
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "https://ta-01kakqd14e9qgacennf3755jrn-3000.wo-yqosysqdylcp6jeriqprmf0ji.w.modal.host",
+)
+ALLOWED_ORIGINS = [
+    FRONTEND_URL,
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,  # We use Bearer tokens, not cookie credentials
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 # Security / Auth helpers
